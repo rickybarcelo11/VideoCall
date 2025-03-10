@@ -1,12 +1,13 @@
 import React from "react";
-import AppRoutes from "./routes/AppRoutes";
+import { BrowserRouter } from "react-router-dom";
+import AppRoutes from "./routes/AppRoutes"; // Importa el enrutador de la aplicación
 
-function App() {
+const App = () => {
   return (
-    <div className="App">
+    <BrowserRouter>
       <AppRoutes />
-    </div>
+    </BrowserRouter>
   );
-}
+};
 
 export default App;

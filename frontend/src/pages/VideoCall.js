@@ -9,4 +9,3 @@ const VideoCall = () => {
 };
 
 export default VideoCall;
-
