@@ -1,143 +1,145 @@
 import React, { useEffect, useRef, useState } from "react";
-import socket from "../socket";
+import AgoraRTC from "agora-rtc-sdk-ng";
 
-const VideoCall = () => {
-    const localVideoRef = useRef(null);
-    const remoteVideoRef = useRef(null);
-    const [users, setUsers] = useState([]);
-    const [peerConnection, setPeerConnection] = useState(null);
-    const [error, setError] = useState(null); // Estado para manejar errores
+const APP_ID = "56b746e5abca4055b0fc5aac0bfcc57b"; // Tu App ID real
+const CHANNEL = "demoChannel";       // Asegúrate de usar el mismo canal en todos los dispositivos
+const TOKEN = null;                  // Para pruebas, déjalo en null
+const UNPUBLISH_DELAY = 5000;        // Retraso de 5000ms antes de eliminar un usuario publicado (5 segundos)
 
-    useEffect(() => {
-        async function startMedia() {
-            try {
-                console.log("🔄 Iniciando solicitud de acceso a cámara/micrófono...");
+function VideoCall() {
+  const localVideoRef = useRef(null);
+  const [client] = useState(() =>
+    AgoraRTC.createClient({ mode: "rtc", codec: "vp8" })
+  );
+  // Almacenamos los usuarios remotos en un objeto: key = UID, value = objeto user
+  const [remoteUsers, setRemoteUsers] = useState({});
+  const [myUID, setMyUID] = useState(null);
 
-                // Verificar compatibilidad con WebRTC
-                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                    console.error("❌ Este navegador no soporta acceso a la cámara/micrófono.");
-                    setError("Este navegador no soporta acceso a la cámara/micrófono.");
-                    return;
-                }
+  // Obtener o generar un UID persistente para este dispositivo
+  useEffect(() => {
+    let uid = localStorage.getItem("agoraUID");
+    if (!uid) {
+      uid = Math.floor(Math.random() * 1000000).toString();
+      localStorage.setItem("agoraUID", uid);
+    }
+    console.log("[Agora] UID persistente:", uid);
+    setMyUID(uid);
+  }, []);
 
-                // Obtener acceso a la cámara y micrófono
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                if (localVideoRef.current) {
-                    localVideoRef.current.srcObject = stream;
-                }
+  useEffect(() => {
+    if (!myUID) return; // Espera a tener el UID
 
-                console.log("✅ Cámara y micrófono activados.");
+    const initAgora = async () => {
+      try {
+        console.log("[Agora] Iniciando join con UID persistente:", myUID);
+        // Usamos Number(myUID) para asegurar el tipo numérico; así, al refrescar se mantiene el mismo UID.
+        await client.join(APP_ID, CHANNEL, TOKEN, Number(myUID));
+        console.log("[Agora] Conectado al canal con UID:", myUID);
 
-                // Crear conexión WebRTC
-                const pc = new RTCPeerConnection({
-                    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-                });
+        // Crear pistas locales
+        const [micTrack, camTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
+        console.log("[Agora] Pistas locales creadas.");
 
-                stream.getTracks().forEach(track => pc.addTrack(track, stream));
-                setPeerConnection(pc);
+        // Publicar pistas locales
+        await client.publish([micTrack, camTrack]);
+        console.log("[Agora] Pistas locales publicadas.");
 
-                // Enviar candidatos ICE
-                pc.onicecandidate = (event) => {
-                    if (event.candidate) {
-                        console.log("📡 Enviando candidato ICE:", event.candidate);
-                        socket.emit("ice-candidate", { target: users[0], candidate: event.candidate });
-                    }
-                };
+        // Reproducir video local
+        camTrack.play(localVideoRef.current);
+        console.log("[Agora] Video local en reproducción.");
 
-                // Recibir stream remoto
-                pc.ontrack = (event) => {
-                    console.log("📡 Recibiendo stream remoto...");
-                    if (remoteVideoRef.current) {
-                        remoteVideoRef.current.srcObject = event.streams[0];
-                    }
-                };
-
-                // Manejar eventos de usuarios conectados
-                socket.on("users-list", (userList) => {
-                    console.log("👥 Usuarios conectados:", userList);
-                    setUsers(userList.filter((id) => id !== socket.id));
-                });
-
-                socket.on("user-connected", (userId) => {
-                    console.log("🟢 Usuario conectado:", userId);
-                    setUsers((prev) => [...prev, userId]);
-                });
-
-                socket.on("user-disconnected", (userId) => {
-                    console.log("🔴 Usuario desconectado:", userId);
-                    setUsers((prev) => prev.filter((id) => id !== userId));
-                });
-
-                // Manejar ofertas de WebRTC
-                socket.on("offer", async ({ sender, sdp }) => {
-                    console.log("📩 Recibida oferta de:", sender);
-                    if (!pc) return;
-                    try {
-                        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-                        const answer = await pc.createAnswer();
-                        await pc.setLocalDescription(answer);
-                        socket.emit("answer", { target: sender, sdp: answer });
-                    } catch (error) {
-                        console.error("❌ Error al procesar oferta:", error);
-                    }
-                });
-
-                // Manejar respuestas de WebRTC
-                socket.on("answer", async ({ sender, sdp }) => {
-                    console.log("📩 Recibida respuesta de:", sender);
-                    if (!pc) return;
-                    try {
-                        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-                    } catch (error) {
-                        console.error("❌ Error al procesar respuesta:", error);
-                    }
-                });
-
-                // Manejar candidatos ICE
-                socket.on("ice-candidate", async ({ sender, candidate }) => {
-                    console.log("📡 Recibido candidato ICE de:", sender);
-                    if (!pc) return;
-                    try {
-                        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-                    } catch (error) {
-                        console.error("❌ Error al agregar candidato ICE:", error);
-                    }
-                });
-
-            } catch (err) {
-                console.error("❌ No se pudo acceder a la cámara/micrófono:", err);
-                setError("No se pudo acceder a la cámara/micrófono. Revisa los permisos.");
+        // Manejo del evento "user-published"
+        client.on("user-published", async (user, mediaType) => {
+          console.log("[Agora] user-published recibido para UID:", user.uid, "tipo:", mediaType);
+          try {
+            await client.subscribe(user, mediaType);
+            console.log("[Agora] Suscripción exitosa para UID:", user.uid, "tipo:", mediaType);
+            if (mediaType === "video" && user.videoTrack) {
+              setRemoteUsers(prev => ({ ...prev, [user.uid]: user }));
+              // Esperamos un poco para que el contenedor se renderice
+              setTimeout(() => {
+                user.videoTrack.play(`remote-container-${user.uid}`);
+                console.log("[Agora] Reproduciendo video remoto para UID:", user.uid);
+              }, 100);
             }
-        }
+            if (mediaType === "audio" && user.audioTrack) {
+              user.audioTrack.play();
+              console.log("[Agora] Reproduciendo audio remoto para UID:", user.uid);
+            }
+          } catch (err) {
+            console.error("[Agora] Error al suscribirse al usuario remoto UID:", user.uid, err);
+          }
+        });
 
-        startMedia();
+        // Manejo del evento "user-unpublished"
+        client.on("user-unpublished", (user) => {
+          console.log("[Agora] user-unpublished recibido para UID:", user.uid);
+          // En lugar de eliminar inmediatamente, esperamos UNPUBLISH_DELAY ms
+          setTimeout(() => {
+            setRemoteUsers(prev => {
+              if (prev[user.uid]) {
+                console.log("[Agora] Eliminando usuario remoto UID:", user.uid);
+                const updated = { ...prev };
+                delete updated[user.uid];
+                return updated;
+              }
+              return prev;
+            });
+          }, UNPUBLISH_DELAY);
+        });
 
-        return () => {
-            console.log("🔄 Limpiando eventos de WebRTC...");
-            socket.off("users-list");
-            socket.off("user-connected");
-            socket.off("user-disconnected");
-            socket.off("offer");
-            socket.off("answer");
-            socket.off("ice-candidate");
-        };
-    }, []);
+        // Manejo del evento "user-left"
+        client.on("user-left", (user) => {
+          console.log("[Agora] user-left recibido para UID:", user.uid);
+          setRemoteUsers(prev => {
+            const updated = { ...prev };
+            delete updated[user.uid];
+            return updated;
+          });
+        });
 
-    return (
-        <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-white">
-            <h2 className="text-2xl mb-4">Videollamada</h2>
+      } catch (error) {
+        console.error("[Agora] Error en la inicialización:", error);
+      }
+    };
 
-            {error ? (
-                <p className="text-red-500">{error}</p>
-            ) : (
-                <>
-                    <p>📷 Cámara activada...</p>
-                    <video ref={localVideoRef} autoPlay playsInline className="w-1/3 border-2 border-white rounded-md shadow-lg" />
-                    <video ref={remoteVideoRef} autoPlay playsInline className="w-1/3 border-2 border-white rounded-md shadow-lg mt-4" />
-                </>
-            )}
+    initAgora();
+
+    return () => {
+      console.log("[Agora] Saliendo del canal...");
+      client.leave();
+    };
+  }, [client, myUID]);
+
+  return (
+    <div>
+      <h1>Videollamada con Agora</h1>
+      <div>
+        <h2>Video Local (UID: {myUID})</h2>
+        <div
+          ref={localVideoRef}
+          style={{ width: "320px", height: "240px", backgroundColor: "black" }}
+        />
+      </div>
+      <div>
+        <h2>Videos Remotos</h2>
+        <div style={{ display: "flex", flexWrap: "wrap" }}>
+          {Object.values(remoteUsers).map(user => (
+            <div
+              key={user.uid}
+              id={`remote-container-${user.uid}`}
+              style={{
+                width: "320px",
+                height: "240px",
+                backgroundColor: "black",
+                margin: "10px",
+              }}
+            />
+          ))}
         </div>
-    );
-};
+      </div>
+    </div>
+  );
+}
 
 export default VideoCall;
